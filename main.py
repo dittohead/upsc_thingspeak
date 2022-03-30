@@ -64,8 +64,10 @@ class upscOutParser:
             self.stdout.update({field: _new_item})
 
     def convert_online_status(self):
+        # todo: someday add "ups.status: OL CHRG LB" as 0.5 value, or maybe thingspeak add some states, not only values
         bool_status_name = "ups.status.isonline"
-        if self.stdout["ups.status"] == "OL":
+        _val = self.stdout["ups.status"][0:2]
+        if _val == "OL":
             self.stdout.update({bool_status_name: 1})
         else:
             self.stdout.update({bool_status_name: 0})
