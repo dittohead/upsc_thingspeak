@@ -1,7 +1,9 @@
 from config import Settings as S
 import requests
 import subprocess
-
+import logging
+from time import sleep
+from requests.exceptions import RequestException
 '''
 field1 - battery capacity
 field2 - battery voltage
@@ -9,17 +11,32 @@ field3 - AC Voltage
 field4 - Online status
 '''
 
+logging.basicConfig(format=u'%(filename) s[LINE:%(lineno)d]# %(levelname)-8s [%(asctime)s]  %(message)s',
+                    level=logging.INFO, filename=u'error.log')
+
 
 class APIWriter:
     def __init__(self, api_key):
         self.write_endpoint = "https://api.thingspeak.com/update"
         self.api_key = api_key
+        self.number_retries = 3
+        self.retries_timeout = 10
 
     def send_data(self, **kwargs):
         payload = {"api_key": self.api_key}
         payload.update(kwargs)
-        r = requests.get(self.write_endpoint, params=payload)
-        return r.status_code
+        try:
+            r = requests.get(self.write_endpoint, params=payload)
+            logging.info(f'API Health: status code: {r.status_code}, text: {r.text}')
+        except RequestException as e:
+            logging.error(f"request error: {e}")
+            for i in range(self.number_retries):
+                r = requests.get(self.write_endpoint, params=payload)
+                if r.status_code == 200:
+                    break
+                else:
+                    logging.error("didn't help")
+                sleep(self.retries_timeout)
 
 
 class upscOutParser:
@@ -36,6 +53,7 @@ class upscOutParser:
             line = byteline.decode("utf-8")
             key, value = line.split(": ")
             self.stdout.update({key: value.rstrip("\n")})
+
         self.normalize_digits()
         self.convert_online_status()
 
@@ -59,6 +77,7 @@ class upscOutParser:
             "ups.timer.reboot",
             "ups.timer.shutdown"
         ]
+
         for field in digits_fields:
             _new_item = float(self.stdout[field])
             self.stdout.update({field: _new_item})
@@ -66,11 +85,17 @@ class upscOutParser:
     def convert_online_status(self):
         # todo: someday add "ups.status: OL CHRG LB" as 0.5 value, or maybe thingspeak add some states, not only values
         bool_status_name = "ups.status.isonline"
-        _val = self.stdout["ups.status"][0:2]
+        _val = self.stdout["ups.status"]
         if _val == "OL":
             self.stdout.update({bool_status_name: 1})
-        else:
+        elif _val == "OL CHRG LB":
+            self.stdout.update({bool_status_name: 0.3})
+        elif _val == "OL CHRG":
+            self.stdout.update({bool_status_name: 0.5})
+        elif _val == "OB DISCHRG":
             self.stdout.update({bool_status_name: 0})
+        elif _val == "OL CHRG RB":
+            self.stdout.update({bool_status_name: -1})
 
     def get_stdout(self):
         return self.stdout
@@ -80,23 +105,20 @@ class upscOutParser:
             return self.get_stdout()
         else:
             _picked_dict = {}
-            for item in args:
+            for arg in args:
                 try:
-                    _picked_dict.update({item:self.stdout[item]})
+                    _picked_dict.update({arg: self.stdout[arg]})
                 except KeyError:
                     pass
             return _picked_dict
 
 
 if __name__ == '__main__':
-    needed_values = ["battery.charge",
-                    "battery.voltage",
-                    "input.voltage",
-                    "ups.status.isonline"]
     data_to_send = {}
-    read_values = upscOutParser(S.UPS_NAME).get_stdout_values(*needed_values)
+    read_values = upscOutParser(S.UPS_NAME).get_stdout_values(*S.needed_values)
     i = 1
-    for item in needed_values:
+    logging.info(read_values)
+    for item in S.needed_values:
         data_to_send.update({f'field{i}': read_values[item]})
         i += 1
 
